@@ -1,14 +1,6 @@
 {
-    "Croydon": {
-        "code": 1,
-        "url": "https://publicaccess3.croydon.gov.uk/online-applications/search.do?action=advanced"
-    },
-    "Ealing": {
-        "code": 4,
-        "url": "https://pam.ealing.gov.uk/online-applications/search.do?action=advanced"
-    },
-    "Lambeth": {
-        "code": 6,
-        "url": "https://planning.lambeth.gov.uk/online-applications/search.do?action=advanced"
+    "City of London": {
+        "code": 33,
+        "url": "https://www.planning2.cityoflondon.gov.uk/online-applications/search.do?action=advanced"
     }
 }

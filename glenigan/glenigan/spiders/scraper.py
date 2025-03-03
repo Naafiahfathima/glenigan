@@ -111,24 +111,61 @@ class ScraperSpider(scrapy.Spider):
 
     def parse_tab(self, response):
         """Extract each tab's content and save once all tabs are scraped."""
-        ref_no = response.meta["ref_no"]
-        all_html_content = response.meta["all_html_content"]
-        tab_index = response.meta["tab_index"]
-        base_url = response.meta["base_url"]
+        try:
+            ref_no = response.meta["ref_no"]
+            all_html_content = response.meta["all_html_content"]
+            tab_index = response.meta["tab_index"]
+            base_url = response.meta["base_url"]
 
-        tab_name = self.tabs[tab_index]
-        all_html_content += f"\n<!-- Tab: {tab_name} -->\n{response.text}"
+            tab_name = self.tabs[tab_index]
+            all_html_content += f"\n<!-- Tab: {tab_name} -->\n{response.text}"
 
-        next_tab_index = tab_index + 1
-        if next_tab_index < len(self.tabs):
-            yield scrapy.Request(
-                url=self.construct_tab_url(base_url, self.tabs[next_tab_index]),
-                callback=self.parse_tab,
-                meta={"ref_no": ref_no, "all_html_content": all_html_content, "tab_index": next_tab_index, "base_url": base_url},
-                dont_filter=True
-            )
-        else:
-            yield HtmlScraperItem(ref_no=ref_no, url=base_url, html_content=all_html_content)
+            logger.info(f"Successfully scraped tab {tab_name} for {ref_no}")
+
+            next_tab_index = tab_index + 1
+            if next_tab_index < len(self.tabs):
+                yield scrapy.Request(
+                    url=self.construct_tab_url(base_url, self.tabs[next_tab_index]),
+                    callback=self.parse_tab,
+                    meta={"ref_no": ref_no, "all_html_content": all_html_content, "tab_index": next_tab_index, "base_url": base_url},
+                    errback=self.handle_tab_error,  # Handle tab scraping failure
+                    dont_filter=True
+                )
+            else:
+                yield HtmlScraperItem(ref_no=ref_no, url=base_url, html_content=all_html_content)
+
+        except Exception as e:
+            self.log_error(ref_no, f"Failed to scrape tab: {self.tabs[tab_index]}, Error: {str(e)}")
+            logger.error(f"Failed to scrape tab {self.tabs[tab_index]} for {ref_no}: {e}")
+
+    def handle_tab_error(self, failure):
+        """Handles errors when a tab scraping request fails."""
+        request = failure.request
+        ref_no = request.meta.get("ref_no", "Unknown")
+        tab_index = request.meta.get("tab_index", -1)
+        tab_name = self.tabs[tab_index] if tab_index >= 0 else "Unknown"
+        error_msg = repr(failure.value)
+
+        logger.error(f"Tab scraping failed for {ref_no}, Tab: {tab_name}, Error: {error_msg}")
+
+        # Save error in the database
+        self.log_error(ref_no, f"Failed to scrape tab {tab_name}: {error_msg}")
+        
+    def log_error(self, ref_no, error_msg):
+        """Logs errors into the database."""
+        try:
+            connection = pymysql.connect(**self.db_config)
+            cursor = connection.cursor()
+
+            cursor.execute("INSERT INTO errors (ref_no, error) VALUES (%s, %s) ON DUPLICATE KEY UPDATE error = %s", (ref_no, error_msg, error_msg))
+            connection.commit()
+
+            logger.info(f"Error logged for {ref_no}: {error_msg}")
+
+            cursor.close()
+            connection.close()
+        except Exception as e:
+            logger.error(f"Database logging failed for {ref_no}: {str(e)}")
 
     def construct_tab_url(self, base_url, tab_name):
         """Constructs the correct tab URL."""
