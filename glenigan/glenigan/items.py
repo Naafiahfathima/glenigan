@@ -14,3 +14,7 @@ class HtmlScraperItem(scrapy.Item):
     ref_no = scrapy.Field()
     url = scrapy.Field()
     html_content = scrapy.Field()
+
+    def __repr__(self):
+        """Avoid logging large HTML content"""
+        return f"HtmlScraperItem(ref_no={self.get('ref_no')}, url={self.get('url')}, html_content=<hidden>)"

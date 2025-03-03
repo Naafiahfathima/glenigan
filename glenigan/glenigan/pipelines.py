@@ -10,7 +10,9 @@ import pymysql
 import logging
 from scrapy.exceptions import DropItem
 import configparser
+from glenigan.logger_config import logger
 from glenigan.items import ApplicationItem, HtmlScraperItem
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 class GleniganPipeline:
     def __init__(self):
@@ -43,6 +45,13 @@ class GleniganPipeline:
                 scrape_status VARCHAR(10) DEFAULT 'No'
             )
         """)
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS errors (
+                ref_no VARCHAR(255),
+                error TEXT,
+                PRIMARY KEY (ref_no)
+            )
+        """)
 
     def process_item(self, item, spider):
         """Process items based on their type."""
@@ -61,8 +70,15 @@ class GleniganPipeline:
         if self.cursor.fetchone():
             raise DropItem(f"Duplicate entry: {ref_no}")
 
-        self.cursor.execute("INSERT INTO applications (ref_no, Url) VALUES (%s, %s)", (ref_no, url))
-        self.conn.commit()
+        try:
+            self.cursor.execute("INSERT INTO applications (ref_no, Url) VALUES (%s, %s)", (ref_no, url))
+            self.conn.commit()
+            logger.info(f"Inserted Application: {ref_no}")
+        except Exception as e:
+            logger.error(f"Unexpected error processing {ref_no}: {e}")
+            raise DropItem(f"Unexpected error processing {ref_no}: {e}")
+    
+    
 
     def process_html_scraper_item(self, item):
         """Process HTML scraper item and update scrape status immediately."""
@@ -74,17 +90,22 @@ class GleniganPipeline:
         with open(filename, "w", encoding="utf-8") as file:
             file.write(html_content)
 
-        logging.info(f"Saved: {filename}")
+        logger.info(f"Saved: {filename}")
         self.update_scrape_status(ref_no)
-
+    @retry(
+        retry=retry_if_exception_type(pymysql.MySQLError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=1, max=10),
+        reraise=True,
+    )
     def update_scrape_status(self, ref_no):
         """Update scrape status in the database immediately."""
         try:
             self.cursor.execute("UPDATE applications SET scrape_status = 'Yes' WHERE ref_no = %s", (ref_no,))
             self.conn.commit()
-            logging.info(f"Updated scrape_status to 'Yes' for {ref_no}")
+            logger.info(f"Updated scrape_status to 'Yes' for {ref_no}")
         except Exception as e:
-            logging.error(f"Error updating scrape_status for {ref_no}: {e}")
+            logger.error(f"Error updating scrape_status for {ref_no}: {e}")
 
     def close_spider(self, spider):
         """Closes the database connection when the spider finishes."""

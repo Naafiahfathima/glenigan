@@ -15,14 +15,14 @@ class ScraperSpider(scrapy.Spider):
         super().__init__(*args, **kwargs)
 
         # Load council details
-        json_path = r"C:\Users\naafiah.fathima\Desktop\glenigan_scrapy\glenigan\glenigan\councils.json"
+        json_path = r"C:\Users\naafiah.fathima\Desktop\glenigan_scrapy1\glenigan\glenigan\councils.json"
         if not os.path.exists(json_path):
             raise FileNotFoundError(f"Councils JSON file not found at: {json_path}")
         with open(json_path, "r") as file:
             self.councils = json.load(file)
 
         # Load database configuration
-        config_path = r"C:\Users\naafiah.fathima\Desktop\glenigan_scrapy\glenigan\glenigan\database.ini"
+        config_path = r"C:\Users\naafiah.fathima\Desktop\glenigan_scrapy1\glenigan\glenigan\database.ini"
         self.db_config = self.load_db_config(config_path)
         
         # Define tabs to scrape
