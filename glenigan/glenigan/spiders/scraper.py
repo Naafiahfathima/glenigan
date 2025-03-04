@@ -13,6 +13,7 @@ class ScraperSpider(scrapy.Spider):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.check_updates = kwargs.get("check_updates", "no")
 
         # Load council details
         json_path = r"C:\Users\naafiah.fathima\Desktop\glenigan_scrapy1\glenigan\glenigan\councils.json"
@@ -40,13 +41,23 @@ class ScraperSpider(scrapy.Spider):
         }
 
     def start_requests(self):
-        """Start scraping for each council from JSON file."""
+        """Start scraping only for applications that have not been scraped."""
+        connection = pymysql.connect(**self.db_config)
+        cursor = connection.cursor()
+
         for council_name, council_info in self.councils.items():
+            # Fetch existing applications and their scrape_status
+            cursor.execute("SELECT ref_no, scrape_status FROM applications WHERE ref_no LIKE %s", (f"{council_info['code']}_%",))
+            existing_records = {row[0]: row[1] for row in cursor.fetchall()}
+
             yield scrapy.Request(
                 url=council_info["url"],
                 callback=self.parse,
-                meta={"council_name": council_name, "council_code": council_info["code"], "url": council_info["url"]},
+                meta={"council_name": council_name, "council_code": council_info["code"], "url": council_info["url"], "existing_records": existing_records},
             )
+
+        cursor.close()
+        connection.close()
 
     def parse(self, response):
         """Extract CSRF token and submit form request."""
@@ -57,7 +68,7 @@ class ScraperSpider(scrapy.Spider):
         form_data = {
             "_csrf": csrf_token,
             "date(applicationValidatedStart)": "18/02/2025",
-            "date(applicationValidatedEnd)": "18/02/2025",
+            "date(applicationValidatedEnd)": "19/02/2025",
             "searchType": "Application",
         }
         post_url = response.meta["url"].replace("search.do?action=advanced", "advancedSearchResults.do")
@@ -74,6 +85,8 @@ class ScraperSpider(scrapy.Spider):
         applications = response.xpath('//li[contains(@class, "searchresult")]')
         if not applications:
             return
+        
+        existing_records = response.meta["existing_records"]
 
         for app in applications:
             link_tag = app.xpath(".//a")
@@ -81,20 +94,60 @@ class ScraperSpider(scrapy.Spider):
             ref_no = app.xpath('.//p[@class="metaInfo"]/text()').re_first(r"Ref\. No:\s*([\w/.-]+)")
             sanitized_ref_no = self.sanitize_ref_no(f"{response.meta['council_code']}_{ref_no}")
 
-            # Scrape and immediately fetch HTML dump
-            yield ApplicationItem(ref_no=sanitized_ref_no, link=link)
+            # Determine if we should scrape this application and whether it's a rescrape
+            if sanitized_ref_no in existing_records:
+                current_status = existing_records[sanitized_ref_no]
+                if current_status == "Yes(R)":
+                    logger.info(f"Skipping already scraped application with Yes(R): {sanitized_ref_no}")
+                    continue  # Do not overwrite Yes(R)
+                elif current_status == "Yes":
+                    if self.check_updates.lower() == "yes":
+                        logger.info(f"Rescraping application (check_updates=yes): {sanitized_ref_no}")
+                        rescrape = True
+                    else:
+                        logger.info(f"Skipping already scraped application: {sanitized_ref_no}")
+                        continue
+                elif current_status == "No":
+                    logger.info(f"Scraping application with status No: {sanitized_ref_no}")
+                    rescrape = False
+            else:
+                logger.info(f"Inserting new application: {sanitized_ref_no}")
+                self.insert_new_application(sanitized_ref_no, link)
+                rescrape = False
+
+            # Pass the is_rescrape flag with the item and in meta for downstream use
+            yield ApplicationItem(ref_no=sanitized_ref_no, link=link, is_rescrape=rescrape)
             yield scrapy.Request(
                 url=link,
                 callback=self.parse_html,
-                meta={"ref_no": sanitized_ref_no, "base_url": link, "all_html_content": "", "tab_index": 0},
+                meta={
+                    "ref_no": sanitized_ref_no,
+                    "base_url": link,
+                    "all_html_content": "",
+                    "tab_index": 0,
+                    "rescrape": rescrape
+                },
                 dont_filter=True
             )
 
-        # Handle pagination
+        # Handle pagination as before
         next_page_tag = response.xpath('//a[contains(@class, "next")]/@href').get()
         if next_page_tag:
             next_page_url = response.meta["url"].split("/online-applications")[0] + next_page_tag
             yield scrapy.Request(url=next_page_url, callback=self.parse_results, meta=response.meta)
+
+    def insert_new_application(self, ref_no, url):
+        """Insert new application into the database with scrape_status = 'No'."""
+        connection = pymysql.connect(**self.db_config)
+        cursor = connection.cursor()
+        try:
+            cursor.execute("INSERT INTO applications (ref_no, Url, scrape_status) VALUES (%s, %s, 'No')", (ref_no, url))
+            connection.commit()
+        except Exception as e:
+            logger.error(f"Error inserting application {ref_no}: {e}")
+        finally:
+            cursor.close()
+            connection.close()
 
     def parse_html(self, response):
         """Extracts main HTML and starts scraping tabs."""
@@ -105,7 +158,13 @@ class ScraperSpider(scrapy.Spider):
         yield scrapy.Request(
             url=self.construct_tab_url(base_url, self.tabs[0]),
             callback=self.parse_tab,
-            meta={"ref_no": ref_no, "all_html_content": all_html_content, "tab_index": 0, "base_url": base_url},
+            meta={
+                "ref_no": ref_no,
+                "all_html_content": all_html_content,
+                "tab_index": 0,
+                "base_url": base_url,
+                "rescrape": response.meta.get("rescrape", False)
+            },
             dont_filter=True
         )
 
@@ -127,13 +186,23 @@ class ScraperSpider(scrapy.Spider):
                 yield scrapy.Request(
                     url=self.construct_tab_url(base_url, self.tabs[next_tab_index]),
                     callback=self.parse_tab,
-                    meta={"ref_no": ref_no, "all_html_content": all_html_content, "tab_index": next_tab_index, "base_url": base_url},
-                    errback=self.handle_tab_error,  # Handle tab scraping failure
+                    meta={
+                        "ref_no": ref_no,
+                        "all_html_content": all_html_content,
+                        "tab_index": next_tab_index,
+                        "base_url": base_url,
+                        "rescrape": response.meta.get("rescrape", False)
+                    },
+                    errback=self.handle_tab_error,
                     dont_filter=True
                 )
             else:
-                yield HtmlScraperItem(ref_no=ref_no, url=base_url, html_content=all_html_content)
-
+                yield HtmlScraperItem(
+                    ref_no=ref_no,
+                    url=base_url,
+                    html_content=all_html_content,
+                    is_rescrape=response.meta.get("rescrape", False)
+                )
         except Exception as e:
             self.log_error(ref_no, f"Failed to scrape tab: {self.tabs[tab_index]}, Error: {str(e)}")
             logger.error(f"Failed to scrape tab {self.tabs[tab_index]} for {ref_no}: {e}")

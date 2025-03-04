@@ -51,7 +51,7 @@ def get_logging_config():
             'logger': {  # Custom logger
                 'handlers': ['file', 'console'],
                 'level': 'DEBUG',
-                'propagate': True,
+                'propagate': False,
             },
             # Capture all Scrapy logs
             'scrapy': {

@@ -34,10 +34,8 @@ class GleniganPipeline:
         }
 
     def open_spider(self, spider):
-        """Connects to the database when the spider starts."""
         self.conn = pymysql.connect(**self.db_config)
         self.cursor = self.conn.cursor()
-
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS applications (
                 ref_no VARCHAR(255) PRIMARY KEY,
@@ -52,6 +50,8 @@ class GleniganPipeline:
                 PRIMARY KEY (ref_no)
             )
         """)
+        # Capture the check_updates flag from the spider
+        self.check_updates = getattr(spider, "check_updates", "no")
 
     def process_item(self, item, spider):
         """Process items based on their type."""
@@ -91,19 +91,31 @@ class GleniganPipeline:
             file.write(html_content)
 
         logger.info(f"Saved: {filename}")
-        self.update_scrape_status(ref_no)
+        # Use the is_rescrape flag from the item to determine final status
+        self.update_scrape_status(ref_no, item.get("is_rescrape", False))
     @retry(
         retry=retry_if_exception_type(pymysql.MySQLError),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=1, max=10),
         reraise=True,
     )
-    def update_scrape_status(self, ref_no):
-        """Update scrape status in the database immediately."""
+    def update_scrape_status(self, ref_no, is_rescrape=False):
+        # Determine the new status based on whether this is a rescrape.
+        new_status = "Yes(R)" if is_rescrape else "Yes"
+        
+        # Check current status and do not update if it's already Yes(R)
+        self.cursor.execute("SELECT scrape_status FROM applications WHERE ref_no = %s", (ref_no,))
+        result = self.cursor.fetchone()
+        if result:
+            current_status = result[0]
+            if current_status == "Yes(R)":
+                logger.info(f"Status is already Yes(R) for {ref_no}. Not updating.")
+                return
+
         try:
-            self.cursor.execute("UPDATE applications SET scrape_status = 'Yes' WHERE ref_no = %s", (ref_no,))
+            self.cursor.execute("UPDATE applications SET scrape_status = %s WHERE ref_no = %s", (new_status, ref_no))
             self.conn.commit()
-            logger.info(f"Updated scrape_status to 'Yes' for {ref_no}")
+            logger.info(f"Updated scrape_status to '{new_status}' for {ref_no}")
         except Exception as e:
             logger.error(f"Error updating scrape_status for {ref_no}: {e}")
 
