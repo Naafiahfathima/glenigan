@@ -14,6 +14,7 @@ class ScraperSpider(scrapy.Spider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.check_updates = kwargs.get("check_updates", "no")
+        self.crawler_type = kwargs.get("crawler_type", "planning")
 
         # Load council details
         json_path = r"C:\Users\naafiah.fathima\Desktop\glenigan_scrapy1\glenigan\glenigan\councils.json"
@@ -47,7 +48,7 @@ class ScraperSpider(scrapy.Spider):
 
         for council_name, council_info in self.councils.items():
             # Fetch existing applications and their scrape_status
-            cursor.execute("SELECT ref_no, scrape_status FROM applications WHERE ref_no LIKE %s", (f"{council_info['code']}_%",))
+            cursor.execute(f"SELECT ref_no, scrape_status FROM {self.get_app_table()} WHERE ref_no LIKE %s", (f"{council_info['code']}_%",))
             existing_records = {row[0]: row[1] for row in cursor.fetchall()}
 
             yield scrapy.Request(
@@ -65,12 +66,20 @@ class ScraperSpider(scrapy.Spider):
         if not csrf_token:
             return
 
-        form_data = {
-            "_csrf": csrf_token,
-            "date(applicationValidatedStart)": "18/02/2025",
-            "date(applicationValidatedEnd)": "19/02/2025",
-            "searchType": "Application",
-        }
+        if self.crawler_type == "decision":
+            form_data = {
+                "_csrf": csrf_token,
+                "date(applicationDecisionStart)": "18/02/2025",
+                "date(applicationDecisionEnd)": "20/02/2025",
+                "searchType": "Application",
+            }
+        else:  # planning
+            form_data = {
+                "_csrf": csrf_token,
+                "date(applicationValidatedStart)": "19/02/2025",
+                "date(applicationValidatedEnd)": "19/02/2025",
+                "searchType": "Application",
+            }
         post_url = response.meta["url"].replace("search.do?action=advanced", "advancedSearchResults.do")
         yield FormRequest(
             url=f"{post_url}?action=firstPage",
@@ -79,6 +88,14 @@ class ScraperSpider(scrapy.Spider):
             meta=response.meta,
             method="POST",
         )
+
+    def get_app_table(self):
+        """Return the table name for application data based on crawler_type."""
+        return "decision_app" if self.crawler_type == "decision" else "plan_app"
+
+    def get_error_table(self):
+        """Return the table name for errors based on crawler_type."""
+        return "decision_error" if self.crawler_type == "decision" else "plan_error"
 
     def parse_results(self, response):
         """Extract application details and immediately start HTML scraping."""
@@ -111,8 +128,8 @@ class ScraperSpider(scrapy.Spider):
                     logger.info(f"Scraping application with status No: {sanitized_ref_no}")
                     rescrape = False
             else:
-                logger.info(f"Inserting new application: {sanitized_ref_no}")
-                self.insert_new_application(sanitized_ref_no, link)
+                # logger.info(f"Inserting new application: {sanitized_ref_no}")
+                # self.insert_new_application(sanitized_ref_no, link)
                 rescrape = False
 
             # Pass the is_rescrape flag with the item and in meta for downstream use
@@ -137,11 +154,15 @@ class ScraperSpider(scrapy.Spider):
             yield scrapy.Request(url=next_page_url, callback=self.parse_results, meta=response.meta)
 
     def insert_new_application(self, ref_no, url):
-        """Insert new application into the database with scrape_status = 'No'."""
+        """Insert new application into the appropriate table with scrape_status = 'No'."""
         connection = pymysql.connect(**self.db_config)
         cursor = connection.cursor()
+        table_name = self.get_app_table()
         try:
-            cursor.execute("INSERT INTO applications (ref_no, Url, scrape_status) VALUES (%s, %s, 'No')", (ref_no, url))
+            cursor.execute(
+                f"INSERT INTO {table_name} (ref_no, Url, scrape_status) VALUES (%s, %s, 'No')",
+                (ref_no, url)
+            )
             connection.commit()
         except Exception as e:
             logger.error(f"Error inserting application {ref_no}: {e}")
@@ -221,16 +242,17 @@ class ScraperSpider(scrapy.Spider):
         self.log_error(ref_no, f"Failed to scrape tab {tab_name}: {error_msg}")
         
     def log_error(self, ref_no, error_msg):
-        """Logs errors into the database."""
+        """Logs errors into the appropriate table."""
+        table_name = self.get_error_table()
         try:
             connection = pymysql.connect(**self.db_config)
             cursor = connection.cursor()
-
-            cursor.execute("INSERT INTO errors (ref_no, error) VALUES (%s, %s) ON DUPLICATE KEY UPDATE error = %s", (ref_no, error_msg, error_msg))
+            cursor.execute(
+                f"INSERT INTO {table_name} (ref_no, error) VALUES (%s, %s) ON DUPLICATE KEY UPDATE error = %s",
+                (ref_no, error_msg, error_msg)
+            )
             connection.commit()
-
             logger.info(f"Error logged for {ref_no}: {error_msg}")
-
             cursor.close()
             connection.close()
         except Exception as e:

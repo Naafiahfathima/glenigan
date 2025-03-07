@@ -36,15 +36,24 @@ class GleniganPipeline:
     def open_spider(self, spider):
         self.conn = pymysql.connect(**self.db_config)
         self.cursor = self.conn.cursor()
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS applications (
+        # Determine crawler_type from the spider (default to "planning")
+        crawler_type = getattr(spider, "crawler_type", "planning")
+        if crawler_type == "decision":
+            self.table_app = "decision_app"
+            self.table_err = "decision_error"
+        else:
+            self.table_app = "plan_app"
+            self.table_err = "plan_error"
+        # Create dynamic tables based on crawler_type
+        self.cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS {self.table_app} (
                 ref_no VARCHAR(255) PRIMARY KEY,
                 Url TEXT,
                 scrape_status VARCHAR(10) DEFAULT 'No'
             )
         """)
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS errors (
+        self.cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS {self.table_err} (
                 ref_no VARCHAR(255),
                 error TEXT,
                 PRIMARY KEY (ref_no)
@@ -62,16 +71,15 @@ class GleniganPipeline:
         return item
 
     def process_application_item(self, item):
-        """Inserts application data into the database."""
+        """Inserts application data into the dynamic table."""
         ref_no = item["ref_no"]
         url = item["link"]
-
-        self.cursor.execute("SELECT * FROM applications WHERE ref_no = %s", (ref_no,))
+        self.cursor.execute(f"SELECT * FROM {self.table_app} WHERE ref_no = %s", (ref_no,))
         if self.cursor.fetchone():
             raise DropItem(f"Duplicate entry: {ref_no}")
 
         try:
-            self.cursor.execute("INSERT INTO applications (ref_no, Url) VALUES (%s, %s)", (ref_no, url))
+            self.cursor.execute(f"INSERT INTO {self.table_app} (ref_no, Url) VALUES (%s, %s)", (ref_no, url))
             self.conn.commit()
             logger.info(f"Inserted Application: {ref_no}")
         except Exception as e:
@@ -84,15 +92,13 @@ class GleniganPipeline:
         """Process HTML scraper item and update scrape status immediately."""
         ref_no = item['ref_no']
         html_content = item['html_content']
-
         sanitized_ref_no = ref_no.replace("/", "_")
         filename = os.path.join(self.output_folder, f"{sanitized_ref_no}.html")
         with open(filename, "w", encoding="utf-8") as file:
             file.write(html_content)
-
         logger.info(f"Saved: {filename}")
-        # Use the is_rescrape flag from the item to determine final status
         self.update_scrape_status(ref_no, item.get("is_rescrape", False))
+
     @retry(
         retry=retry_if_exception_type(pymysql.MySQLError),
         stop=stop_after_attempt(3),
@@ -100,20 +106,16 @@ class GleniganPipeline:
         reraise=True,
     )
     def update_scrape_status(self, ref_no, is_rescrape=False):
-        # Determine the new status based on whether this is a rescrape.
         new_status = "Yes(R)" if is_rescrape else "Yes"
-        
-        # Check current status and do not update if it's already Yes(R)
-        self.cursor.execute("SELECT scrape_status FROM applications WHERE ref_no = %s", (ref_no,))
+        self.cursor.execute(f"SELECT scrape_status FROM {self.table_app} WHERE ref_no = %s", (ref_no,))
         result = self.cursor.fetchone()
         if result:
             current_status = result[0]
             if current_status == "Yes(R)":
                 logger.info(f"Status is already Yes(R) for {ref_no}. Not updating.")
                 return
-
         try:
-            self.cursor.execute("UPDATE applications SET scrape_status = %s WHERE ref_no = %s", (new_status, ref_no))
+            self.cursor.execute(f"UPDATE {self.table_app} SET scrape_status = %s WHERE ref_no = %s", (new_status, ref_no))
             self.conn.commit()
             logger.info(f"Updated scrape_status to '{new_status}' for {ref_no}")
         except Exception as e:
