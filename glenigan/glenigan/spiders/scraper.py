@@ -13,6 +13,7 @@ class ScraperSpider(scrapy.Spider):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.crawler_type = kwargs.get("crawler_type", "planning")
 
         # Load council details
         json_path = r"C:\Users\naafiah.fathima\Desktop\glenigan_scrapy1\glenigan\glenigan\councils.json"
@@ -26,8 +27,11 @@ class ScraperSpider(scrapy.Spider):
         self.db_config = self.load_db_config(config_path)
         
         # Define tabs to scrape
-        self.tabs = ["summary", "details", "contacts", "dates", "makeComment", "neighbourComments", "consulteeComments", "constraints", "documents", "relatedCases"]
-
+        if self.crawler_type == "decision":
+            self.tabs = ["summary", "details"]
+        else:
+            self.tabs = ["summary", "details", "contacts", "dates", "makeComment", "neighbourComments", "consulteeComments", "constraints", "documents", "relatedCases"]
+            
     def load_db_config(self, path):
         config = configparser.ConfigParser()
         config.read(path)
@@ -54,12 +58,20 @@ class ScraperSpider(scrapy.Spider):
         if not csrf_token:
             return
 
-        form_data = {
-            "_csrf": csrf_token,
-            "date(applicationValidatedStart)": "18/02/2025",
-            "date(applicationValidatedEnd)": "18/02/2025",
-            "searchType": "Application",
-        }
+        if self.crawler_type == "decision":
+            form_data = {
+                "_csrf": csrf_token,
+                "date(applicationDecisionStart)": "18/02/2025",
+                "date(applicationDecisionEnd)": "20/02/2025",
+                "searchType": "Application",
+            }
+        else:
+            form_data = {
+                "_csrf": csrf_token,
+                "date(applicationValidatedStart)": "18/02/2025",
+                "date(applicationValidatedEnd)": "18/02/2025",
+                "searchType": "Application",
+            }
         post_url = response.meta["url"].replace("search.do?action=advanced", "advancedSearchResults.do")
         yield FormRequest(
             url=f"{post_url}?action=firstPage",
@@ -176,3 +188,11 @@ class ScraperSpider(scrapy.Spider):
     def sanitize_ref_no(self, ref_no):
         """Sanitize reference numbers."""
         return re.sub(r'[^a-zA-Z0-9_-]', '_', ref_no)
+    
+    def get_app_table(self):
+        """Return the table name for application data based on crawler_type."""
+        return "decision_app" if self.crawler_type == "decision" else "plan_app"
+
+    def get_error_table(self):
+        """Return the table name for errors based on crawler_type."""
+        return "decision_error" if self.crawler_type == "decision" else "plan_error"

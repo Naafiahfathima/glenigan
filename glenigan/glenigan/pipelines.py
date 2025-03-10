@@ -3,8 +3,6 @@
 # Don't forget to add your pipeline to the ITEM_PIPELINES setting
 # See: https://docs.scrapy.org/en/latest/topics/item-pipeline.html
 
-
-# useful for handling different item types with a single interface
 import os
 import pymysql
 import logging
@@ -37,16 +35,20 @@ class GleniganPipeline:
         """Connects to the database when the spider starts."""
         self.conn = pymysql.connect(**self.db_config)
         self.cursor = self.conn.cursor()
+        
+        # Get table names from the spider based on crawler_type
+        self.app_table = spider.get_app_table()
+        self.error_table = spider.get_error_table()
 
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS applications (
+        self.cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS {self.app_table} (
                 ref_no VARCHAR(255) PRIMARY KEY,
                 Url TEXT,
                 scrape_status VARCHAR(10) DEFAULT 'No'
             )
         """)
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS errors (
+        self.cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS {self.error_table} (
                 ref_no VARCHAR(255),
                 error TEXT,
                 PRIMARY KEY (ref_no)
@@ -62,24 +64,22 @@ class GleniganPipeline:
         return item
 
     def process_application_item(self, item):
-        """Inserts application data into the database."""
+        """Inserts application data into the appropriate table."""
         ref_no = item["ref_no"]
         url = item["link"]
 
-        self.cursor.execute("SELECT * FROM applications WHERE ref_no = %s", (ref_no,))
+        self.cursor.execute(f"SELECT * FROM {self.app_table} WHERE ref_no = %s", (ref_no,))
         if self.cursor.fetchone():
             raise DropItem(f"Duplicate entry: {ref_no}")
 
         try:
-            self.cursor.execute("INSERT INTO applications (ref_no, Url) VALUES (%s, %s)", (ref_no, url))
+            self.cursor.execute(f"INSERT INTO {self.app_table} (ref_no, Url) VALUES (%s, %s)", (ref_no, url))
             self.conn.commit()
             logger.info(f"Inserted Application: {ref_no}")
         except Exception as e:
             logger.error(f"Unexpected error processing {ref_no}: {e}")
             raise DropItem(f"Unexpected error processing {ref_no}: {e}")
     
-    
-
     def process_html_scraper_item(self, item):
         """Process HTML scraper item and update scrape status immediately."""
         ref_no = item['ref_no']
@@ -92,6 +92,7 @@ class GleniganPipeline:
 
         logger.info(f"Saved: {filename}")
         self.update_scrape_status(ref_no)
+
     @retry(
         retry=retry_if_exception_type(pymysql.MySQLError),
         stop=stop_after_attempt(3),
@@ -101,7 +102,7 @@ class GleniganPipeline:
     def update_scrape_status(self, ref_no):
         """Update scrape status in the database immediately."""
         try:
-            self.cursor.execute("UPDATE applications SET scrape_status = 'Yes' WHERE ref_no = %s", (ref_no,))
+            self.cursor.execute(f"UPDATE {self.app_table} SET scrape_status = 'Yes' WHERE ref_no = %s", (ref_no,))
             self.conn.commit()
             logger.info(f"Updated scrape_status to 'Yes' for {ref_no}")
         except Exception as e:

@@ -1,6 +1,6 @@
 {
-    "City of London": {
-        "code": 33,
-        "url": "https://www.planning2.cityoflondon.gov.uk/online-applications/search.do?action=advanced"
+    "Croydon": {
+        "code": 1,
+        "url": "https://publicaccess3.croydon.gov.uk/online-applications/search.do?action=advanced"
     }
 }
