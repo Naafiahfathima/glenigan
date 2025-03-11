@@ -4,6 +4,7 @@
 # See: https://docs.scrapy.org/en/latest/topics/item-pipeline.html
 
 import os
+import re
 import pymysql
 import logging
 from scrapy.exceptions import DropItem
@@ -63,6 +64,18 @@ class GleniganPipeline:
             self.process_html_scraper_item(item)
         return item
 
+    def clean_html_content(self, html):
+        """Clean HTML by removing comments, script tags, and extra whitespace."""
+        # Remove HTML comments (including multi-line comments)
+        html = re.sub(r'<!--[\s\S]*?-->', '', html)
+        # Remove all script tags and their content
+        html = re.sub(r'<script[\s\S]*?>[\s\S]*?</script>', '', html, flags=re.IGNORECASE)
+        # Remove all closing tags (e.g., </p>, </div>, etc.)
+        html = re.sub(r'</[^>]+>', '', html)
+        # Split content into lines, strip whitespace, and remove empty lines
+        lines = [line.strip() for line in html.splitlines() if line.strip()]
+        return "\n".join(lines)
+    
     def process_application_item(self, item):
         """Inserts application data into the appropriate table."""
         ref_no = item["ref_no"]
@@ -84,6 +97,9 @@ class GleniganPipeline:
         """Process HTML scraper item and update scrape status immediately."""
         ref_no = item['ref_no']
         html_content = item['html_content']
+
+        # Clean the HTML dump before storing it
+        html_content = self.clean_html_content(html_content)
 
         sanitized_ref_no = ref_no.replace("/", "_")
         filename = os.path.join(self.output_folder, f"{sanitized_ref_no}.html")

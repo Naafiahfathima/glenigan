@@ -30,7 +30,7 @@ class ScraperSpider(scrapy.Spider):
         if self.crawler_type == "decision":
             self.tabs = ["summary", "details"]
         else:
-            self.tabs = ["summary", "details", "contacts", "dates", "makeComment", "neighbourComments", "consulteeComments", "constraints", "documents", "relatedCases"]
+            self.tabs = ["summary", "details", "contacts", "dates"]
             
     def load_db_config(self, path):
         config = configparser.ConfigParser()
@@ -68,8 +68,8 @@ class ScraperSpider(scrapy.Spider):
         else:
             form_data = {
                 "_csrf": csrf_token,
-                "date(applicationValidatedStart)": "18/02/2025",
-                "date(applicationValidatedEnd)": "18/02/2025",
+                "date(applicationValidatedStart)": "19/02/2025",
+                "date(applicationValidatedEnd)": "19/02/2025",
                 "searchType": "Application",
             }
         post_url = response.meta["url"].replace("search.do?action=advanced", "advancedSearchResults.do")
@@ -96,11 +96,18 @@ class ScraperSpider(scrapy.Spider):
             # Scrape and immediately fetch HTML dump
             yield ApplicationItem(ref_no=sanitized_ref_no, link=link)
             yield scrapy.Request(
-                url=link,
-                callback=self.parse_html,
-                meta={"ref_no": sanitized_ref_no, "base_url": link, "all_html_content": "", "tab_index": 0},
-                dont_filter=True
-            )
+            url=link,
+            callback=self.parse_html,
+            meta={
+                "ref_no": sanitized_ref_no,
+                "base_url": link,
+                "all_html_content": "",
+                "tab_index": 0,
+                "council_name": response.meta.get("council_name", ""),
+                "council_code": response.meta.get("council_code", "")
+            },
+            dont_filter=True
+        )
 
         # Handle pagination
         next_page_tag = response.xpath('//a[contains(@class, "next")]/@href').get()
@@ -113,11 +120,30 @@ class ScraperSpider(scrapy.Spider):
         ref_no = response.meta['ref_no']
         base_url = response.meta['base_url']
         all_html_content = f"\n<!-- Main Page -->\n{response.text}"
+        council_name = response.meta.get("council_name", "")
+        council_code = response.meta.get("council_code", "")
+        document_page_url = self.construct_tab_url(base_url, "documents")
+        
+        # Prepend the extra info into the HTML dump:
+        all_html_content = (
+            f"Council Name: {council_name}"
+            f"\nCouncil Code: {council_code}"
+            f"\nMain Page URL: {base_url}"
+            f"\nDocument Page URL: {document_page_url}"
+            f"\n<!-- Main Page -->\n{response.text}"
+        )
         
         yield scrapy.Request(
             url=self.construct_tab_url(base_url, self.tabs[0]),
             callback=self.parse_tab,
-            meta={"ref_no": ref_no, "all_html_content": all_html_content, "tab_index": 0, "base_url": base_url},
+            meta={
+                "ref_no": ref_no,
+                "all_html_content": all_html_content,
+                "tab_index": 0,
+                "base_url": base_url,
+                "council_name": council_name,
+                "council_code": council_code
+            },
             dont_filter=True
         )
 
