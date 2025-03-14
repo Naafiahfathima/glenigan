@@ -30,7 +30,7 @@ class ScraperSpider(scrapy.Spider):
         if self.crawler_type == "decision":
             self.tabs = ["summary", "details"]
         else:
-            self.tabs = ["summary", "details", "contacts", "dates"]
+            self.tabs = ["summary", "details", "contacts", "dates","documents"]
             
     def load_db_config(self, path):
         config = configparser.ConfigParser()
@@ -190,16 +190,17 @@ class ScraperSpider(scrapy.Spider):
         self.log_error(ref_no, f"Failed to scrape tab {tab_name}: {error_msg}")
         
     def log_error(self, ref_no, error_msg):
-        """Logs errors into the database."""
+        """Logs errors into the appropriate error table based on crawler_type."""
         try:
             connection = pymysql.connect(**self.db_config)
             cursor = connection.cursor()
-
-            cursor.execute("INSERT INTO errors (ref_no, error) VALUES (%s, %s) ON DUPLICATE KEY UPDATE error = %s", (ref_no, error_msg, error_msg))
+            error_table = self.get_error_table()  # Use dynamic table name
+            
+            query = f"INSERT INTO {error_table} (ref_no, error) VALUES (%s, %s) ON DUPLICATE KEY UPDATE error = %s"
+            cursor.execute(query, (ref_no, error_msg, error_msg))
             connection.commit()
-
+            
             logger.info(f"Error logged for {ref_no}: {error_msg}")
-
             cursor.close()
             connection.close()
         except Exception as e:
