@@ -8,9 +8,12 @@ log_dir = 'logs'
 os.makedirs(log_dir, exist_ok=True)
 
 # Use a fixed log filename to capture everything
-log_filename = os.path.join(log_dir, datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + '.log')
+log_filename = os.path.join(
+    log_dir, datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + '.log')
 
 # Define logging configuration
+
+
 def get_logging_config():
     return {
         'version': 1,
@@ -51,7 +54,7 @@ def get_logging_config():
             'logger': {  # Custom logger
                 'handlers': ['file', 'console'],
                 'level': 'DEBUG',
-                'propagate': True,
+                'propagate': False,
             },
             # Capture all Scrapy logs
             'scrapy': {
@@ -83,6 +86,7 @@ def get_logging_config():
         },
     }
 
+
 # Apply logging configuration
 logging.config.dictConfig(get_logging_config())
 
@@ -91,4 +95,3 @@ logger = logging.getLogger('logger')
 
 # Override Scrapy’s logging to ensure it uses our settings
 scrapy.utils.log.configure_logging(get_logging_config())
-

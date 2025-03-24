@@ -1,12 +1,14 @@
-import scrapy
-from scrapy.http import FormRequest
-import pymysql
 import configparser
+import json
 import os
 import re
-import json
+
+import pymysql
+import scrapy
 from glenigan.items import ApplicationItem, HtmlScraperItem
 from glenigan.logger_config import logger
+from scrapy.http import FormRequest
+
 
 class ScraperSpider(scrapy.Spider):
     name = "scraper"
@@ -14,24 +16,27 @@ class ScraperSpider(scrapy.Spider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.crawler_type = kwargs.get("crawler_type", "planning")
+        self.check_updates = kwargs.get("check_updates", "no")
 
         # Load council details
         json_path = r"C:\Users\naafiah.fathima\Desktop\glenigan_scrapy1\glenigan\glenigan\councils.json"
         if not os.path.exists(json_path):
-            raise FileNotFoundError(f"Councils JSON file not found at: {json_path}")
+            raise FileNotFoundError(
+                f"Councils JSON file not found at: {json_path}")
         with open(json_path, "r") as file:
             self.councils = json.load(file)
 
         # Load database configuration
         config_path = r"C:\Users\naafiah.fathima\Desktop\glenigan_scrapy1\glenigan\glenigan\database.ini"
         self.db_config = self.load_db_config(config_path)
-        
+
         # Define tabs to scrape
         if self.crawler_type == "decision":
             self.tabs = ["summary", "details"]
         else:
-            self.tabs = ["summary", "details", "contacts", "dates","documents"]
-            
+            self.tabs = ["summary", "details",
+                         "contacts", "dates", "documents"]
+
     def load_db_config(self, path):
         config = configparser.ConfigParser()
         config.read(path)
@@ -49,20 +54,22 @@ class ScraperSpider(scrapy.Spider):
             yield scrapy.Request(
                 url=council_info["url"],
                 callback=self.parse,
-                meta={"council_name": council_name, "council_code": council_info["code"], "url": council_info["url"]},
+                meta={"council_name": council_name,
+                      "council_code": council_info["code"], "url": council_info["url"]},
             )
 
     def parse(self, response):
         """Extract CSRF token and submit form request."""
-        csrf_token = response.xpath('//form[@id="advancedSearchForm"]//input[@name="_csrf"]/@value').get()
+        csrf_token = response.xpath(
+            '//form[@id="advancedSearchForm"]//input[@name="_csrf"]/@value').get()
         if not csrf_token:
             return
 
         if self.crawler_type == "decision":
             form_data = {
                 "_csrf": csrf_token,
-                "date(applicationDecisionStart)": "18/02/2025",
-                "date(applicationDecisionEnd)": "20/02/2025",
+                "date(applicationDecisionStart)": "14/03/2025",
+                "date(applicationDecisionEnd)": "14/03/2025",
                 "searchType": "Application",
             }
         else:
@@ -72,7 +79,8 @@ class ScraperSpider(scrapy.Spider):
                 "date(applicationValidatedEnd)": "19/02/2025",
                 "searchType": "Application",
             }
-        post_url = response.meta["url"].replace("search.do?action=advanced", "advancedSearchResults.do")
+        post_url = response.meta["url"].replace(
+            "search.do?action=advanced", "advancedSearchResults.do")
         yield FormRequest(
             url=f"{post_url}?action=firstPage",
             formdata=form_data,
@@ -89,30 +97,54 @@ class ScraperSpider(scrapy.Spider):
 
         for app in applications:
             link_tag = app.xpath(".//a")
-            link = response.meta["url"].split("/online-applications")[0] + link_tag.xpath("./@href").get() if link_tag else "N/A"
-            ref_no = app.xpath('.//p[@class="metaInfo"]/text()').re_first(r"Ref\. No:\s*([\w/.-]+)")
-            sanitized_ref_no = self.sanitize_ref_no(f"{response.meta['council_code']}_{ref_no}")
+            link = response.meta["url"].split(
+                "/online-applications")[0] + link_tag.xpath("./@href").get() if link_tag else "N/A"
+            ref_no = app.xpath(
+                './/p[@class="metaInfo"]/text()').re_first(r"Ref\. No:\s*([\w/.-]+)")
+            sanitized_ref_no = self.sanitize_ref_no(
+                f"{response.meta['council_code']}_{ref_no}")
+
+            is_rescrape = False  # default: not a rescrape
+            if self.crawler_type == "decision" and self.check_updates.lower() == "yes":
+                current_status = self.get_scrape_status(sanitized_ref_no)
+                if current_status == "Yes":
+                    current_rescrape_status = self.get_rescrape_status(
+                        sanitized_ref_no)
+                    if current_rescrape_status != "yes":
+                        logger.info(
+                            f"Rescraping application (check_updates=yes): {sanitized_ref_no}")
+                        is_rescrape = True
+                    else:
+                        logger.info(
+                            f"Skipping re-scrape for {sanitized_ref_no} as it is already flagged")
+                        continue  # Skip this application
+                else:
+                    logger.info(
+                        f"Not re-scraping {sanitized_ref_no} because scrape_status is No")
 
             # Scrape and immediately fetch HTML dump
-            yield ApplicationItem(ref_no=sanitized_ref_no, link=link)
+            yield ApplicationItem(ref_no=sanitized_ref_no, link=link, is_rescrape=is_rescrape)
             yield scrapy.Request(
-            url=link,
-            callback=self.parse_html,
-            meta={
-                "ref_no": sanitized_ref_no,
-                "base_url": link,
-                "all_html_content": "",
-                "tab_index": 0,
-                "council_name": response.meta.get("council_name", ""),
-                "council_code": response.meta.get("council_code", "")
-            },
-            dont_filter=True
-        )
+                url=link,
+                callback=self.parse_html,
+                meta={
+                    "ref_no": sanitized_ref_no,
+                    "base_url": link,
+                    "all_html_content": "",
+                    "tab_index": 0,
+                    "council_name": response.meta.get("council_name", ""),
+                    "council_code": response.meta.get("council_code", ""),
+                    "is_rescrape": is_rescrape
+                },
+                dont_filter=True
+            )
 
         # Handle pagination
-        next_page_tag = response.xpath('//a[contains(@class, "next")]/@href').get()
+        next_page_tag = response.xpath(
+            '//a[contains(@class, "next")]/@href').get()
         if next_page_tag:
-            next_page_url = response.meta["url"].split("/online-applications")[0] + next_page_tag
+            next_page_url = response.meta["url"].split(
+                "/online-applications")[0] + next_page_tag
             yield scrapy.Request(url=next_page_url, callback=self.parse_results, meta=response.meta)
 
     def parse_html(self, response):
@@ -123,7 +155,7 @@ class ScraperSpider(scrapy.Spider):
         council_name = response.meta.get("council_name", "")
         council_code = response.meta.get("council_code", "")
         document_page_url = self.construct_tab_url(base_url, "documents")
-        
+
         # Prepend the extra info into the HTML dump:
         all_html_content = (
             f"Council Name: {council_name}"
@@ -132,7 +164,7 @@ class ScraperSpider(scrapy.Spider):
             f"\nDocument Page URL: {document_page_url}"
             f"\n<!-- Main Page -->\n{response.text}"
         )
-        
+
         yield scrapy.Request(
             url=self.construct_tab_url(base_url, self.tabs[0]),
             callback=self.parse_tab,
@@ -142,7 +174,8 @@ class ScraperSpider(scrapy.Spider):
                 "tab_index": 0,
                 "base_url": base_url,
                 "council_name": council_name,
-                "council_code": council_code
+                "council_code": council_code,
+                "is_rescrape": response.meta.get("is_rescrape", False)
             },
             dont_filter=True
         )
@@ -163,18 +196,33 @@ class ScraperSpider(scrapy.Spider):
             next_tab_index = tab_index + 1
             if next_tab_index < len(self.tabs):
                 yield scrapy.Request(
-                    url=self.construct_tab_url(base_url, self.tabs[next_tab_index]),
+                    url=self.construct_tab_url(
+                        base_url, self.tabs[next_tab_index]),
                     callback=self.parse_tab,
-                    meta={"ref_no": ref_no, "all_html_content": all_html_content, "tab_index": next_tab_index, "base_url": base_url},
-                    errback=self.handle_tab_error,  # Handle tab scraping failure
+                    meta={
+                        "ref_no": ref_no,
+                        "all_html_content": all_html_content,
+                        "tab_index": next_tab_index,
+                        "base_url": base_url,
+                        # propagate the flag
+                        "is_rescrape": response.meta.get("is_rescrape", False)
+                    },
+                    errback=self.handle_tab_error,
                     dont_filter=True
                 )
             else:
-                yield HtmlScraperItem(ref_no=ref_no, url=base_url, html_content=all_html_content)
+                yield HtmlScraperItem(
+                    ref_no=ref_no,
+                    url=base_url,
+                    html_content=all_html_content,
+                    is_rescrape=response.meta.get("is_rescrape", False)
+                )
 
         except Exception as e:
-            self.log_error(ref_no, f"Failed to scrape tab: {self.tabs[tab_index]}, Error: {str(e)}")
-            logger.error(f"Failed to scrape tab {self.tabs[tab_index]} for {ref_no}: {e}")
+            self.log_error(
+                ref_no, f"Failed to scrape tab: {self.tabs[tab_index]}, Error: {str(e)}")
+            logger.error(
+                f"Failed to scrape tab {self.tabs[tab_index]} for {ref_no}: {e}")
 
     def handle_tab_error(self, failure):
         """Handles errors when a tab scraping request fails."""
@@ -184,22 +232,23 @@ class ScraperSpider(scrapy.Spider):
         tab_name = self.tabs[tab_index] if tab_index >= 0 else "Unknown"
         error_msg = repr(failure.value)
 
-        logger.error(f"Tab scraping failed for {ref_no}, Tab: {tab_name}, Error: {error_msg}")
+        logger.error(
+            f"Tab scraping failed for {ref_no}, Tab: {tab_name}, Error: {error_msg}")
 
         # Save error in the database
         self.log_error(ref_no, f"Failed to scrape tab {tab_name}: {error_msg}")
-        
+
     def log_error(self, ref_no, error_msg):
         """Logs errors into the appropriate error table based on crawler_type."""
         try:
             connection = pymysql.connect(**self.db_config)
             cursor = connection.cursor()
             error_table = self.get_error_table()  # Use dynamic table name
-            
+
             query = f"INSERT INTO {error_table} (ref_no, error) VALUES (%s, %s) ON DUPLICATE KEY UPDATE error = %s"
             cursor.execute(query, (ref_no, error_msg, error_msg))
             connection.commit()
-            
+
             logger.info(f"Error logged for {ref_no}: {error_msg}")
             cursor.close()
             connection.close()
@@ -212,10 +261,11 @@ class ScraperSpider(scrapy.Spider):
             return base_url.split("activeTab=")[0] + f"activeTab={tab_name}"
         else:
             return base_url + f"&activeTab={tab_name}"
+
     def sanitize_ref_no(self, ref_no):
         """Sanitize reference numbers."""
         return re.sub(r'[^a-zA-Z0-9_-]', '_', ref_no)
-    
+
     def get_app_table(self):
         """Return the table name for application data based on crawler_type."""
         return "decision_app" if self.crawler_type == "decision" else "plan_app"
@@ -223,3 +273,33 @@ class ScraperSpider(scrapy.Spider):
     def get_error_table(self):
         """Return the table name for errors based on crawler_type."""
         return "decision_error" if self.crawler_type == "decision" else "plan_error"
+
+    def get_scrape_status(self, ref_no):
+        """Query the database for the scrape_status of a given application."""
+        try:
+            connection = pymysql.connect(**self.db_config)
+            cursor = connection.cursor()
+            query = f"SELECT scrape_status FROM {self.get_app_table()} WHERE ref_no = %s"
+            cursor.execute(query, (ref_no,))
+            result = cursor.fetchone()
+            cursor.close()
+            connection.close()
+            return result[0] if result else "No"
+        except Exception as e:
+            logger.error(f"Error checking scrape status for {ref_no}: {e}")
+            return "No"
+
+    def get_rescrape_status(self, ref_no):
+        """Query the database for the rescrape_status of a given application."""
+        try:
+            connection = pymysql.connect(**self.db_config)
+            cursor = connection.cursor()
+            query = f"SELECT rescrape_status FROM {self.get_app_table()} WHERE ref_no = %s"
+            cursor.execute(query, (ref_no,))
+            result = cursor.fetchone()
+            cursor.close()
+            connection.close()
+            return result[0] if result else "No"
+        except Exception as e:
+            logger.error(f"Error checking rescrape status for {ref_no}: {e}")
+            return "No"
